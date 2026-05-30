@@ -1,4 +1,4 @@
-﻿# Dolphin Android 构建记录
+﻿# Dolphin 构建记录（Android + Windows）
 
 ## 项目信息
 
@@ -156,3 +156,141 @@ git submodule update --init --recursive
 2. `android.enableJetifier=true` 已被 AGP 标记为 deprecated，将在 AGP 10.0 移除
 3. 项目自带 `benchmark` 模块，debug 构建会包含 baseline profile 依赖
 4. 签名配置使用环境变量: `KEY_STORE`、`KEY_STORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`
+
+---
+
+## 仓库空间分析
+
+| 目录 | 大小 | 说明 |
+|------|------|------|
+| 仓库总计 | ~3,896 MB | |
+| .git/ | 511 MB | 完整历史（48万+对象） |
+| Source/ | 2,133 MB | 含 CMake 缓存 1,330 MB + Gradle 输出 774 MB |
+| Externals/ | 749 MB | 子模块依赖源码 |
+| CMake 缓存 (.cxx/) | 1,330 MB | Native 编译产物，增量构建复用 |
+| Gradle 输出 (build/) | 774 MB | APK + 中间产物 |
+
+### Native 构建缓存复用
+
+- CMake 编译产物缓存在 `Source/Android/app/.cxx/` 目录
+- **后续增量构建不会重新编译 C++ 代码**（只要不 clean 或修改 CMakeLists）
+- 增量构建仅编译 Kotlin/Java 层，耗时约 11 秒
+
+### Native 代码位置
+
+| 目录 | 内容 |
+|------|------|
+| `Source/Core/` | C++ 模拟器核心（CPU/GPU/DSP/IOS 等） |
+| `Externals/` | 第三方依赖（子模块：zlib、libpng、libusb、SFML、curl、mbedtls 等） |
+| `Source/Android/app/src/main/cpp/` | Android JNI 桥接层 |
+| `Source/Core/DolphinQt/` | Qt 桌面 GUI |
+| `Source/Core/DolphinNoGUI/` | 无 GUI / Headless 模式 |
+| `Source/Core/DolphinTool/` | CLI 工具（磁盘管理、WAD 转换等） |
+| `Source/UnitTests/` | C++ 单元测试（Core/VideoCommon/Common） |
+
+### Debug/Release 共存
+
+| | Debug | Release |
+|------|------|------|
+| 包名 | `org.dolphinemu.dolphinemu.debug` | `org.dolphinemu.dolphinemu` |
+| 应用名 | Dolphin Debug | Dolphin Emulator |
+| 图标 | 橙色渐变海豚 | 蓝色渐变海豚 |
+| 图标资源 | `src/debug/res/` | `src/main/res/` |
+
+---
+
+## Windows 桌面构建
+
+Dolphin 原生支持 Windows 桌面版，可脱离 Android/手机进行 C++ 核心测试。
+
+### 前置依赖
+
+- Visual Studio 2022（或 Build Tools）含 C++ 桌面开发工作负载
+- CMake 3.22+
+- Qt 6.x（GUI 模式需要，Headless 不需要）
+
+### 构建方式
+
+#### 1. Qt GUI 模式（完整模拟器）
+
+```powershell
+cd D:\nili\3rd_party_projects\dolphin
+cmake -B build-win -G "Visual Studio 17 2022" -A x64 `
+  -DENABLE_QT=ON `
+  -DENABLE_TESTS=ON
+cmake --build build-win --config RelWithDebInfo
+```
+
+产出: `build-win/Binaries/Dolphin.exe` — 完整 GUI 模拟器，可直接加载游戏 ISO 测试。
+
+#### 2. Headless 模式（无 GUI，适合自动化测试）
+
+```powershell
+cmake -B build-headless -G "Visual Studio 17 2022" -A x64 `
+  -DENABLE_QT=OFF `
+  -DENABLE_NOGUI=ON `
+  -DENABLE_HEADLESS=ON `
+  -DENABLE_TESTS=ON
+cmake --build build-headless --config RelWithDebInfo
+```
+
+产出: `build-headless/Binaries/DolphinNoGUI.exe` — 无窗口运行，可命令行加载游戏。
+
+#### 3. 仅单元测试
+
+```powershell
+cmake -B build-test -G "Visual Studio 17 2022" -A x64 `
+  -DENABLE_QT=OFF `
+  -DENABLE_TESTS=ON
+cmake --build build-test --config RelWithDebInfo
+ctest --test-dir build-test -C RelWithDebInfo
+```
+
+产出: 运行 `Source/UnitTests/` 下的 Core/VideoCommon/Common 单元测试。
+
+### 可用 CMake 选项
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `ENABLE_QT` | ON | Qt GUI 前端 |
+| `ENABLE_NOGUI` | ON | 无 GUI 前端 |
+| `ENABLE_HEADLESS` | OFF | Headless 模式（无渲染输出） |
+| `ENABLE_CLI_TOOL` | ON | dolphin-tool CLI 工具 |
+| `ENABLE_TESTS` | ON | 单元测试 |
+| `ENABLE_VULKAN` | ON | Vulkan 渲染后端 |
+| `ENABLE_LTO` | OFF | 链接时优化（编译慢、运行快） |
+| `USE_MGBA` | ON | GBA 模拟联动 |
+| `USE_RETRO_ACHIEVEMENTS` | ON | 成就系统 |
+
+### 测试能力对比
+
+| 模式 | 需要 Qt | 能加载游戏 | 有画面 | 适合 |
+|------|---------|------------|--------|------|
+| Qt GUI | ✅ | ✅ | ✅ | 完整体验、调试 |
+| NoGUI+Headless | ❌ | ✅ | ❌ | 自动化、CI、性能测试 |
+| UnitTests | ❌ | ❌ | ❌ | 核心 C++ 逻辑验证 |
+
+> 💡 **推荐**: 日常开发用 UnitTests 快速验证核心逻辑；需要看画面时用 Qt GUI；CI/自动化用 Headless。
+
+### 构建遇到的问题
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| MSVC 报 mGBA `overrides.c` 编码错误 | 文件含 UTF-8 箭头符号 ↑↓，MSVC 默认 GBK | `Externals/mGBA/CMakeLists.txt` 加 `/utf-8` 编译选项 |
+| CMake 要求 v143 工具集 | 环境有 v145 (MSVC 19.51) | `-T v145` 指定工具集 |
+| UnitTests `PatchAllowlist.VerifyHashes` 失败 | tests.exe 运行目录缺 `Data/Sys/GameSettings` | 拷贝 `Data/Sys/` 到 `Binary/x64/Tests/RelWithDebInfo/Sys/` |
+| MSBuild unittests target 报 ctest 失败 | ctest 缺少 `-C RelWithDebInfo` 参数 | 直接运行 `tests.exe`，不通过 MSBuild |
+
+### 实际构建产物
+
+| 产物 | 路径 | 大小 |
+|------|------|------|
+| DolphinNoGUI.exe | `Binary/x64/RelWithDebInfo/` | 17.2 MB |
+| DolphinTool.exe | `Binary/x64/RelWithDebInfo/` | 14.4 MB |
+| tests.exe | `Binary/x64/Tests/RelWithDebInfo/` | 15.8 MB |
+| app-debug.apk (Android) | `Source/Android/app/build/outputs/apk/debug/` | 20.9 MB |
+
+### 单元测试结果
+
+- **1345/1345 全部通过**（51 test suites, ~6 秒）
+- 测试覆盖: Core (CPU/JIT/IOS/DSP/Gecko/AR)、VideoCommon (VertexLoader)、Common (BitUtils/Crypto)

@@ -8,6 +8,8 @@ target_link_libraries(mgba ZLIB::ZLIB)
 
 if(NOT MSVC)
   target_compile_options(mgba PRIVATE -Wno-unused-parameter -Wno-unused-result -Wno-unused-variable)
+else()
+  target_compile_options(mgba PRIVATE /utf-8)
 endif()
 
 if(ANDROID)
